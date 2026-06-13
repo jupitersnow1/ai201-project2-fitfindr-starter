@@ -16,53 +16,56 @@ You must have at least 3 tools. The three required tools are listed — add any 
 
 **What it does:**
 <!-- Describe what this tool does in 1–2 sentences -->
+search_listings will inspect all of the listings in data/listing.json file with similar descriptions to that of the query sent by the user. It shall return three items sorted by relavance. 
 
 **Input parameters:**
 <!-- List each parameter, its type, and what it represents -->
-- `description` (str): ...
-- `size` (str): ...
-- `max_price` (float): ...
+- `description` (str): A brief description of the item the user is anticipating to look for in the listings catalog
+- `size` (str): The size of the item they are looking for (could be m, l, xl, or even 5, 7, 19, etc)
+- `max_price` (float): The highest price amount the user is willing to pay for the item they are looking for. 
 
 **What it returns:**
 <!-- Describe the return value — what fields does a result contain? -->
+A list of up to three listing dictionaries sorted by relevance to the query. Each listing contains fields such as `id`, `title`, `description`, `category`, `price`, `size`, `colors`, and other metadata from `data/listings.json`.
 
 **What happens if it fails or returns nothing:**
-<!-- What should the agent do if no listings match? -->
+If no listings match, the agent should stop the planning loop early, set a helpful session error message like "No matching thrift finds were found for your query," and not call `suggest_outfit` or `create_fit_card`.
 
 ---
 
 ### Tool 2: suggest_outfit
 
 **What it does:**
-<!-- Describe what this tool does in 1–2 sentences -->
+Given a selected thrift listing and the user's wardrobe, this tool produces a natural-language outfit suggestion for the new item.
 
 **Input parameters:**
 <!-- List each parameter, its type, and what it represents -->
-- `new_item` (dict): ...
-- `wardrobe` (dict): ...
+- `new_item` (dict): The selected thrift listing dict from `search_listings`.
+- `wardrobe` (dict): The user's wardrobe dict, containing an `items` list that may be empty.
 
 **What it returns:**
-<!-- Describe the return value -->
+A non-empty string describing 1–2 full outfit ideas that use the new item, ideally referencing pieces from the wardrobe when available.
 
 **What happens if it fails or returns nothing:**
-<!-- What should the agent do if the wardrobe is empty or no outfit can be suggested? -->
+If the wardrobe is empty, return general styling advice for the new item rather than raising an exception. If the tool cannot create a specific outfit from the wardrobe, return a fallback suggestion string such as "I couldn't build a complete outfit from your current wardrobe, but this piece would pair well with...".
 
 ---
 
 ### Tool 3: create_fit_card
 
 **What it does:**
-<!-- Describe what this tool does in 1–2 sentences -->
+Generate a short social-caption-style blurb describing the outfit suggestion and the thrifted item.
 
 **Input parameters:**
 <!-- List each parameter, its type, and what it represents -->
-- `outfit` (...): ...
+- `outfit` (str): The outfit suggestion string returned by `suggest_outfit`.
+- `new_item` (dict): The selected thrift listing dict used for context.
 
 **What it returns:**
-<!-- Describe the return value -->
+A 2–4 sentence caption suitable for an Instagram/TikTok-style fit card, mentioning the item name, price, platform, and overall vibe.
 
 **What happens if it fails or returns nothing:**
-<!-- What should the agent do if the outfit data is incomplete? -->
+If `outfit` is missing, empty, or incomplete, return a safe fallback message string describing the item and its styling potential instead of raising an exception.
 
 ---
 
@@ -76,7 +79,23 @@ You must have at least 3 tools. The three required tools are listed — add any 
 
 **How does your agent decide which tool to call next?**
 <!-- Describe the logic your planning loop uses. What does it look at? What conditions change its behavior? How does it know when it's done? -->
+The planning loop is decision driven rather than blindly sequential. It first parses the query to understand intent and parameters. Then it uses the results of each tool call to decide whether the next tool is necessary: 
 
+```
+if the query includes an item search intent -> call `search_listings` first
+
+if `search_listings` returns results -> call `suggest_outfit` with the selected top item and wardrobe.
+
+if `search_listings` returns no results -> stop early and set an error message. 
+
+if `search_outfit` returns a valid outfit string -> call `create_fit_card` 
+
+if `search_outfit` returns no usable outfit text -> return a fallback response instead of forcing `create_fit_card` 
+
+if the query is purely about styling a known items from the wardrobe and not searching for a listing, the loop can skip `seach_listings` and move directly to `suggest_outfit` 
+
+This means the agen reacts to what it receives~ seach output, wardrobe contents, and the quality of the outfit suggestion
+```
 ---
 
 ## State Management

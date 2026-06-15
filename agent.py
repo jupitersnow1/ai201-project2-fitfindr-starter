@@ -18,6 +18,8 @@ Usage (once implemented):
     print(result["error"])   # None on success
 """
 
+import re
+
 from tools import search_listings, suggest_outfit, create_fit_card
 
 
@@ -41,11 +43,46 @@ def _new_session(query: str, wardrobe: dict) -> dict:
         "wardrobe": wardrobe,        # user's wardrobe dict
         "outfit_suggestion": None,   # string returned by suggest_outfit
         "fit_card": None,            # string returned by create_fit_card
+        "adjustments": [],           # filters relaxed during a fallback retry
         "error": None,               # set if the interaction ended early
     }
 
 
 # ── planning loop ─────────────────────────────────────────────────────────────
+
+def _parse_query(query: str) -> dict:
+    normalized = query.lower().strip()
+    parsed = {
+        "description": normalized,
+        "size": None,
+        "max_price": None,
+    }
+
+    def _cut(text: str, match: re.Match) -> str:
+        # Remove a matched span by slicing — NOT re.sub on the matched text,
+        # which would re-interpret metachars like "$" in "$30" as a pattern.
+        return text[:match.start()] + " " + text[match.end():]
+
+    # Parse price first so its number (e.g. the 30 in "$30") is consumed here and
+    # can't be mistaken for a size by the bare-number fallback below.
+    price_match = re.search(r"(?:under|below|less than|max|<=|£|€|\$)\s*([0-9]+(?:\.[0-9]{1,2})?)", normalized)
+    if price_match:
+        try:
+            parsed["max_price"] = float(price_match.group(1))
+        except ValueError:
+            parsed["max_price"] = None
+        normalized = _cut(normalized, price_match)
+
+    size_match = re.search(r"\bsize\s*([xs]{1,3}|xxl|xl|l|m|s|[0-9]{1,2})\b", normalized)
+    if not size_match:
+        size_match = re.search(r"\b(xs|s|m|l|xl|xxl|[0-9]{1,2})\b", normalized)
+    if size_match:
+        parsed["size"] = size_match.group(1).upper()
+        normalized = _cut(normalized, size_match)
+
+    parsed["description"] = re.sub(r"\s+", " ", normalized).strip()
+    return parsed
+
 
 def run_agent(query: str, wardrobe: dict) -> dict:
     """
@@ -94,7 +131,57 @@ def run_agent(query: str, wardrobe: dict) -> dict:
     """
     # TODO: implement the planning loop
     session = _new_session(query, wardrobe)
-    session["error"] = "Planning loop not yet implemented."
+
+    if not query or not query.strip():
+        session["error"] = "Please enter something you'd like to search for."
+        return session
+
+    session["parsed"] = _parse_query(query)
+    parsed = session["parsed"]
+
+    # First pass: search with the user's exact constraints.
+    size = parsed["size"]
+    max_price = parsed["max_price"]
+    results = search_listings(parsed["description"], size, max_price)
+
+    # Fallback retry: on a zero-result search, progressively loosen the
+    # constraints — drop the size filter first, then the price ceiling — rather
+    # than giving up immediately. We record what we relaxed so we can tell the user.
+    if not results and size is not None:
+        size = None
+        results = search_listings(parsed["description"], size, max_price)
+    if not results and max_price is not None:
+        max_price = None
+        results = search_listings(parsed["description"], size, max_price)
+
+    session["search_results"] = results
+    if results:
+        if size != parsed["size"]:
+            session["adjustments"].append(f"the size filter ({parsed['size']})")
+        if max_price != parsed["max_price"]:
+            session["adjustments"].append(f"the under-${parsed['max_price']:.0f} price limit")
+
+    if not session["search_results"]:
+        # Specific, actionable failure: say what failed and what to try next.
+        if parsed["size"] or parsed["max_price"]:
+            reason = " — even after dropping the size and price filters"
+            hint = "Try describing the item differently or with fewer keywords."
+        else:
+            reason = ""
+            hint = "Try different or fewer keywords."
+        session["error"] = (
+            f"No thrift finds matched \"{query.strip()}\"{reason}. {hint}"
+        )
+        return session
+
+    session["selected_item"] = session["search_results"][0]
+    session["outfit_suggestion"] = suggest_outfit(
+        session["selected_item"], session["wardrobe"]
+    )
+    session["fit_card"] = create_fit_card(
+        session["outfit_suggestion"], session["selected_item"]
+    )
+
     return session
 
 
